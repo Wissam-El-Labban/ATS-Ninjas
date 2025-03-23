@@ -1,16 +1,15 @@
 import os
 import json
-import openai
+import google.generativeai as genai
 from dotenv import load_dotenv
 
 os.chdir("D:\ATS-Ninjas\App")
-
 load_dotenv()
 
-class OpenAIClient:
+class GeminiClient:
     def __init__(self):
-        openai.api_key = os.getenv("OPENAI_API_KEY")
-        self.model = "gpt-4"
+        genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
+        self.model = genai.GenerativeModel("models/gemini-2.0-pro-exp-02-05")
 
     def extract_jobs(self, cleaned_text):
         prompt = f"""
@@ -38,22 +37,19 @@ class OpenAIClient:
           }}
         ]
         """
-        response = openai.ChatCompletion.create(
-            model=self.model,
-            messages=[
-                {"role": "system", "content": "You are an expert at parsing job descriptions."},
-                {"role": "user", "content": prompt}
-            ],
-            max_tokens=1500,
-            temperature=0.7
-        )
-
+        response = self.model.generate_content(prompt)
         try:
-            response_text = response['choices'][0]['message']['content'].strip()
-            response_text = response_text.replace("json", "").strip()
+            #return json.loads(response.text.strip())
+            response_text = response.text.strip()
+            response_text = str(response_text)
+            print(type(response_text))
+            response_text = response_text.replace("json", "")
+            response_text = response_text[3:-3].strip()
+            print("test below\n")
+            print(response_text)
             return json.loads(response_text)
         except json.JSONDecodeError:
-            raise ValueError("❌ GPT-4 returned invalid JSON:\n\n" + response['choices'][0]['message']['content'])
+            raise ValueError("❌ Gemini returned invalid JSON:\n\n" + response.text)
 
     def write_mail(self, job_description, links):
         prompt = f"""
@@ -69,17 +65,8 @@ class OpenAIClient:
 
         ### EMAIL (NO PREAMBLE):
         """
-        response = openai.ChatCompletion.create(
-            model=self.model,
-            messages=[
-                {"role": "system", "content": "You are an expert at writing professional emails."},
-                {"role": "user", "content": prompt}
-            ],
-            max_tokens=500,
-            temperature=0.7
-        )
-
-        return response['choices'][0]['message']['content'].strip()
+        response = self.model.generate_content(prompt)
+        return response.text.strip()
 
     def write_cover_letter(self, resume, job_description, links):
         prompt = f"""
@@ -95,14 +82,5 @@ class OpenAIClient:
 
         ### COVER LETTER (NO PREAMBLE):
         """
-        response = openai.ChatCompletion.create(
-            model=self.model,
-            messages=[
-                {"role": "system", "content": "You are an expert at writing professional cover letters."},
-                {"role": "user", "content": prompt}
-            ],
-            max_tokens=1000,
-            temperature=0.7
-        )
-
-        return response['choices'][0]['message']['content'].strip()
+        response = self.model.generate_content(prompt)
+        return response.text.strip()

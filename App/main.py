@@ -1,8 +1,10 @@
 import streamlit as st
 from langchain_community.document_loaders import WebBaseLoader
-from gemini_client import GeminiClient
+from gemini_client import OpenAIClient
 from portfolio import Portfolio
 from utils import clean_text
+import os
+os.chdir("D:\ATS-Ninjas\App")
 
 def create_streamlit_app(llm, portfolio, clean_text):
     st.title("📧 Cold Mail & Cover Letter Generator")
@@ -50,38 +52,44 @@ def create_streamlit_app(llm, portfolio, clean_text):
                 return
 
             # 🔧 Flatten nested job lists if needed
-            flat_jobs = []
-            for j in jobs:
-                if isinstance(j, list):
-                    flat_jobs.extend(j)
-                else:
-                    flat_jobs.append(j)
-            jobs = flat_jobs
+            job = jobs[0]
+            print(job)
+            print(type(job))
+            
+            skills = job.get('skills', [])
+            print("skills check \n")
+            print(skills)
+            #print(skills[0])
+            print('\n')
+            print(type(skills))
+            print(skills[0])
+            #links = portfolio.query_links(skills)
+            links = skills[0]
 
-            for job in jobs:
-                skills = job.get('skills', [])
-                links = portfolio.query_links(skills)
+            job_description = job.get("description")
+            #job_description = job.get("description", "No description available.")  # If description is missing, use a default string
+            #print(f"Processing job: {job.get('role')}")  # Debugging statement to track the job being processed
 
-                job_description = job.get("description", str(job))
+            print("still alive")
 
                 # Generate based on selected content type
-                if content_type == "Cold Email":
-                    content = llm.write_mail(job_description, links)
-                    st.code(content, language='markdown')
+            if content_type == "Cold Email":
+                content = llm.write_mail(job_description, links)
+                st.code(content, language='markdown')
 
-                elif content_type == "Cover Letter":
-                    content = llm.write_cover_letter(resume_content, job_description, links)
-                    st.code(content, language='markdown')
+            elif content_type == "Cover Letter":
+                content = llm.write_cover_letter(resume_content, job_description, links)
+                st.code(content, language='markdown')
 
-                    # Save as Word document
-                    filename = llm.save_cover_letter(content)
-                    with open(filename, "rb") as file:
-                        st.download_button(
-                            label="Download Cover Letter",
-                            data=file,
-                            file_name=filename,
-                            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-                        )
+                # Save as Word document
+                filename = llm.save_cover_letter(content)
+                with open(filename, "rb") as file:
+                    st.download_button(
+                        label="Download Cover Letter",
+                        data=file,
+                        file_name=filename,
+                        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                    )
 
         except Exception as e:
             st.error(f"An Error Occurred: {e}")
@@ -105,7 +113,7 @@ def extract_docx_text(docx_file):
     return text
 
 if __name__ == "__main__":
-    chain = GeminiClient()
+    chain = OpenAIClient()
     portfolio = Portfolio()
     st.set_page_config(layout="wide", page_title="Cold Email & Cover Letter Generator", page_icon="📧")
     create_streamlit_app(chain, portfolio, clean_text)
