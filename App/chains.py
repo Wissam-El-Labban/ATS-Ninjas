@@ -1,150 +1,106 @@
-import os
-from langchain_google_genai import ChatGoogleGenerativeAI  # ✅ Gemini
-from langchain_core.prompts import PromptTemplate
-from langchain_core.output_parsers import JsonOutputParser
-from langchain_core.exceptions import OutputParserException
-from docx import Document
-from docx.shared import Pt
-from docx.enum.text import WD_ALIGN_PARAGRAPH
-from docx.oxml import OxmlElement
-from dotenv import load_dotenv
+import streamlit as st
+from langchain_community.document_loaders import WebBaseLoader
+from gemini_client import GeminiClient
+from utils import clean_text
 
-load_dotenv()
+def create_streamlit_app(llm, clean_text):
+    st.title("📧 Cold Mail & Cover Letter Generator")
+    url_input = st.text_input("Enter a Job Posting URL:", value="")
 
+    # Upload Resume File
+    resume_file = st.file_uploader("Upload Your Resume", type=["pdf", "docx", "txt"])
 
-def add_hyperlink(paragraph, text, url):
-    part = paragraph.part
-    r_id = part.relate_to(
-        url,
-        "http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink",
-        is_external=True,
-    )
-    hyperlink = OxmlElement("w:hyperlink")
-    hyperlink.set(
-        "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id", r_id
-    )
-    new_run = OxmlElement("w:r")
-    r_text = OxmlElement("w:t")
-    r_text.text = text
-    new_run.append(r_text)
-    hyperlink.append(new_run)
-    paragraph._element.append(hyperlink)
+    # Dropdown to choose content type
+    content_type = st.selectbox("Select Content Type", ["Cold Email", "Cover Letter"])
 
+    submit_button = st.button("Generate Content")
 
-class Chain:
-    def __init__(self):
-        self.llm = ChatGoogleGenerativeAI(
-            temperature=0,
-            google_api_key=os.getenv("GOOGLE_API_KEY"),  # ✅ From .env
-            model="models/gemini-pro"
-        )
-
-    def extract_jobs(self, cleaned_text):
-        prompt_extract = PromptTemplate.from_template(
-            """
-            ### SCRAPED TEXT FROM WEBSITE:
-            {page_data}
-            ### INSTRUCTION:
-            The scraped text is from the career's page of a website.
-            Your job is to extract the job postings and return them in JSON format containing the following keys: `role`, `experience`, `skills` and `description`.
-            Only return the valid JSON.
-            ### VALID JSON (NO PREAMBLE):
-            """
-        )
-        chain_extract = prompt_extract | self.llm
-        res = chain_extract.invoke(input={"page_data": cleaned_text})
+    if submit_button:
         try:
-            json_parser = JsonOutputParser()
-            res = json_parser.parse(res.content)
-        except OutputParserException:
-            raise OutputParserException("Context too big. Unable to parse jobs.")
-        return res if isinstance(res, list) else [res]
+            # 1) Load and clean web content
+            loader = WebBaseLoader([url_input])
+            raw_text = loader.load().pop().page_content
+            data = clean_text(raw_text[:6000])  # limit text for safety
 
-    def write_mail(self, job, links):
-        prompt_email = PromptTemplate.from_template(
-            """
-            ### JOB DESCRIPTION:
-            {job_description}
+            # 2) Parse resume if provided
+            if resume_file is not None:
+                if resume_file.type == "application/pdf":
+                    resume_content = extract_pdf_text(resume_file)
+                elif resume_file.type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+                    resume_content = extract_docx_text(resume_file)
+                elif resume_file.type == "text/plain":
+                    resume_content = str(resume_file.read(), "utf-8")
+                else:
+                    st.error("Unsupported resume format")
+                    return
+            else:
+                resume_content = ""
 
-            ### INSTRUCTION:
-            You are Pradhum Niroula, a business analytics student at Oakland University.
-            Your job is to write a cold email to the HR regarding the job mentioned above describing my capability
-            in fulfilling their needs.
-            Also add the most relevant ones from the following links to showcase Pradhum's portfolio: {link_list}
-            Remember you are Pradhum Niroula, Master of Science in Business Analytics at Oakland University. 
-            Do not provide a preamble.
-            ### EMAIL (NO PREAMBLE):
-            """
-        )
-        chain_email = prompt_email | self.llm
-        res = chain_email.invoke({"job_description": str(job), "link_list": links})
-        return res.content
+            # 3) Extract jobs
+            jobs = llm.extract_jobs(data)
 
-    def write_content(self, resume_content, job_description, links, content_type="cover_letter"):
-        if content_type == "cover_letter":
-            return self.write_cover_letter(resume_content, job_description, links)
-        else:
-            raise ValueError("Unsupported content type")
+            with st.expander("🔍 View Extracted Jobs (Raw JSON)"):
+                st.json(jobs)
 
-    def write_cover_letter(self, resume_content, job_description, links):
-        prompt_cover_letter = PromptTemplate.from_template(
-            """
-            ### INSTRUCTION:
-            You are a job seeker applying for the position described in the job posting below. Your goal is to write a professional cover letter.
-            Use the provided resume and the job description to highlight your relevant experience, skills, and why you're a great fit for the company and the role.
-            Include the most relevant items from the following portfolio links: {link_list}
-            ### RESUME:
-            {resume_content}
-            ### JOB DESCRIPTION:
-            {job_description}
-            ### COVER LETTER (NO PREAMBLE):
-            """
-        )
-        chain_cover_letter = prompt_cover_letter | self.llm
-        res = chain_cover_letter.invoke(
-            {
-                "resume_content": resume_content,
-                "job_description": job_description,
-                "link_list": links,
-            }
-        )
-        return res.content
+            # Handle no jobs
+            if not jobs or (isinstance(jobs, list) and len(jobs) == 0):
+                st.warning("No job postings extracted. Try a different URL.")
+                return
 
-    def save_cover_letter(self, content, filename="Cover_Letter.docx"):
-        doc = Document()
+            # Flatten if nested
+            flat_jobs = []
+            for job_item in jobs:
+                if isinstance(job_item, list):
+                    flat_jobs.extend(job_item)
+                else:
+                    flat_jobs.append(job_item)
+            jobs = flat_jobs
 
-        heading = doc.add_paragraph()
-        heading.add_run("Pradhum Niroula").bold = True
-        heading.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            # 4) Generate Content
+            for job in jobs:
+                # For demonstration, let's do a direct “job_description”
+                job_description = job.get("description", "No description found")
 
-        contact = doc.add_paragraph()
-        add_hyperlink(contact, "+1 (947) 276-3480", "tel:+19472763480")
-        contact.add_run(" || ")
-        add_hyperlink(contact, "pradesgniroula55@gmail.com", "mailto:pradesgniroula55@gmail.com")
-        contact.add_run(" || Auburn Hills, MI")
-        contact.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                if content_type == "Cold Email":
+                    content = llm.write_mail(job_description, "no links")
+                    st.code(content, language='markdown')
 
-        doc.add_paragraph()
-        line = doc.add_paragraph()
-        line.add_run("─────────────────────────────────────────────────────────").bold = True
-        line.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                elif content_type == "Cover Letter":
+                    content = llm.write_cover_letter(resume_content, job_description, "no links")
+                    st.code(content, language='markdown')
 
-        doc.add_paragraph("\nSeptember 28, 2024")
+                    # (Optional) No docx saving? Or keep it:
+                    filename = llm.save_cover_letter(content)
+                    with open(filename, "rb") as file:
+                        st.download_button(
+                            label="Download Cover Letter",
+                            data=file,
+                            file_name=filename,
+                            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                        )
 
-        recipient = doc.add_paragraph()
-        recipient.add_run("Mr. Jeff Bennett\n").bold = True
-        recipient.add_run("Talent Acquisition Senior Manager, Deloitte LLP\n")
-        recipient.add_run("1001 Woodward,\n")
-        recipient.add_run("MI, 48226-1904\n")
+        except Exception as e:
+            st.error(f"An Error Occurred: {e}")
 
-        doc.add_paragraph("\nDear Sir,\n")
+# Helper: Extract PDF text
+def extract_pdf_text(pdf_file):
+    from PyPDF2 import PdfReader
+    reader = PdfReader(pdf_file)
+    text = ""
+    for page in reader.pages:
+        text += page.extract_text()
+    return text
 
-        paragraphs = content.split("\n\n")
-        for paragraph in paragraphs:
-            doc.add_paragraph(paragraph).style.font.size = Pt(12)
+# Helper: Extract DOCX text
+def extract_docx_text(docx_file):
+    from docx import Document
+    doc = Document(docx_file)
+    text = ""
+    for para in doc.paragraphs:
+        text += para.text + "\n"
+    return text
 
-        doc.add_paragraph("\nSincerely,")
-        doc.add_paragraph("Pradhum Niroula")
-
-        doc.save(filename)
-        return filename
+if __name__ == "__main__":
+    chain = GeminiClient()  # from gemini_client.py
+    st.set_page_config(layout="wide", page_title="Cold Email & Cover Letter Generator", page_icon="📧")
+    create_streamlit_app(chain, clean_text)
